@@ -1,0 +1,9 @@
+{
+  "title":"IntegrationOps Overview","uid":"integrationops-overview","schemaVersion":39,"version":1,"refresh":"5s",
+  "panels":[
+    {"type":"stat","title":"Open Incidents","id":1,"gridPos":{"h":8,"w":6,"x":0,"y":0},"targets":[{"expr":"integrationops_active_incidents","refId":"A"}]},
+    {"type":"timeseries","title":"Check Throughput","id":2,"gridPos":{"h":8,"w":9,"x":6,"y":0},"targets":[{"expr":"sum(rate(integrationops_checks_total[5m])) by (outcome)","legendFormat":"{{outcome}}","refId":"A"}]},
+    {"type":"timeseries","title":"Check Duration p95","id":3,"gridPos":{"h":8,"w":9,"x":15,"y":0},"targets":[{"expr":"histogram_quantile(0.95, sum(rate(integrationops_check_duration_seconds_bucket[5m])) by (le))","legendFormat":"p95","refId":"A"}]},
+    {"type":"timeseries","title":"Alerts","id":4,"gridPos":{"h":8,"w":12,"x":0,"y":8},"targets":[{"expr":"sum(rate(integrationops_alerts_total[5m])) by (event_type,status)","legendFormat":"{{event_type}} {{status}}","refId":"A"}]}
+  ]
+}

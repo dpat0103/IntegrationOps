@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Why IntegrationOps exists, how its monitoring works, and the backend engineering behind the project."
+    />
+    <title>About this project · IntegrationOps</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/">IntegrationOps</a>
+        <div class="nav-links">
+          <a href="/">Monitoring</a><a href="/#case-study">Case study</a
+          ><a href="/about" aria-current="page">About this project</a
+          ><a href="https://github.com/dpat0103/IntegrationOps">GitHub ↗</a>
+        </div>
+      </nav>
+    </header>
+    <main class="shell" id="main">
+      <section class="intro">
+        <p class="eyebrow">About this project</p>
+        <h1>Understanding the health of external API connections.</h1>
+        <p class="lead">
+          IntegrationOps is an independent backend engineering project. It
+          checks the services an application depends on and keeps a clear record
+          of failures and recovery.
+        </p>
+        <div class="footer-links">
+          <a class="button primary" href="/">Try the monitoring demo</a
+          ><a class="button" href="https://github.com/dpat0103/IntegrationOps"
+            >Read the source & README ↗</a
+          >
+        </div>
+      </section>
+      <div class="about-grid">
+        <section class="panel prose">
+          <h2>The problem</h2>
+          <p>
+            An online store can load normally while its payment service is
+            unavailable. Shipping requests might be too slow, or an identity
+            service might reject an expired access token.
+          </p>
+          <p>
+            Checking whether the store itself is online does not explain those
+            failures. Each connection needs its own checks and history.
+          </p>
+          <p>
+            IntegrationOps records what the service returned, classifies the
+            result, and opens an incident when failures persist.
+          </p>
+        </section>
+        <section class="panel prose">
+          <h2>What you can see in the demo</h2>
+          <ul>
+            <li>
+              Three independent example services: payment, shipping, and
+              identity.
+            </li>
+            <li>
+              Normal, slow, and failed responses with readable explanations.
+            </li>
+            <li>
+              An incident opening after repeated failures and resolving after
+              normal responses return.
+            </li>
+            <li>
+              Check history, response times, and an incident timeline for each
+              service.
+            </li>
+            <li>An “Out of date” state when expected checks stop arriving.</li>
+          </ul>
+          <p class="small">
+            Each visitor has separate demo state. All provider responses are
+            simulated.
+          </p>
+        </section>
+      </div>
+      <section class="panel prose" id="engineering">
+        <h2>The engineering behind the interface</h2>
+        <p>
+          The main design question is whether monitoring state stays correct
+          when work is retried, workers overlap, or a process restarts.
+        </p>
+        <ul>
+          <li>
+            <strong>Persistent check runs:</strong> a scheduled check receives a
+            stable ID before entering the queue. Retrying the run reuses its
+            result and does not repeat incident updates.
+          </li>
+          <li>
+            <strong>Atomic claims:</strong> the database coordinates active runs
+            and expiring leases. One service can have only one queued or running
+            check at a time.
+          </li>
+          <li>
+            <strong>Incident consistency:</strong> check results, incident
+            changes, and notification records commit together. A database
+            constraint permits only one open incident per service.
+          </li>
+          <li>
+            <strong>Durable alerts:</strong> notification delivery retries
+            independently. An unavailable Slack webhook does not discard the
+            incident.
+          </li>
+          <li>
+            <strong>Monitoring freshness:</strong> service results and process
+            heartbeats show whether the monitor is still collecting evidence.
+          </li>
+          <li>
+            <strong>Safe configuration:</strong> real monitoring changes require
+            operator credentials. Public controls only affect the visitor's
+            simulated services.
+          </li>
+        </ul>
+      </section>
+      <section class="panel">
+        <h2>Architecture & tools</h2>
+        <p class="muted">
+          The local demo and distributed worker stack use the same check and
+          incident rules.
+        </p>
+        <div class="flow" aria-label="Scheduled monitoring flow">
+          <span>Celery Beat schedules a run</span><i aria-hidden="true">→</i
+          ><span>Redis queues it</span><i aria-hidden="true">→</i
+          ><span>Worker claims & checks</span><i aria-hidden="true">→</i
+          ><span>PostgreSQL stores the result</span>
+        </div>
+        <dl class="stack-grid">
+          <dt>Python · FastAPI</dt>
+          <dd>API requests, configuration, and the built-in web interface.</dd>
+          <dt>SQLAlchemy · PostgreSQL · SQLite</dt>
+          <dd>
+            Configuration, run claims, check history, incidents, notification
+            outbox, and persistent metrics.
+          </dd>
+          <dt>Celery · Redis</dt>
+          <dd>
+            Scheduled work, separate worker execution, and recovery after
+            interrupted delivery.
+          </dd>
+          <dt>Alembic</dt>
+          <dd>
+            Versioned database initialization and upgrades from the original
+            schema.
+          </dd>
+          <dt>HTTPX · HTTPCore · Fernet</dt>
+          <dd>
+            Bounded HTTP probes, DNS-pinned public connections, and encrypted
+            stored request headers.
+          </dd>
+          <dt>Prometheus · Grafana</dt>
+          <dd>
+            Metrics collected from committed database state and an operational
+            dashboard.
+          </dd>
+          <dt>PyTest · Playwright · GitHub Actions</dt>
+          <dd>
+            Regression tests, browser workflows, and automated build/integration
+            checks.
+          </dd>
+          <dt>Docker Compose</dt>
+          <dd>
+            Repeatable API, database, broker, scheduler, and worker deployment.
+          </dd>
+        </dl>
+        <p class="small">
+          The lightweight mode uses SQLite and a local asynchronous scheduler.
+          Prometheus metrics are derived from persisted results, so work
+          performed in a separate worker is visible to the API exporter.
+        </p>
+      </section>
+      <section class="panel prose">
+        <h2>How to interpret the results</h2>
+        <p>
+          <strong>Working:</strong> the response matches the expected status and
+          data, within the response-time threshold. <strong>Slow:</strong> the
+          response is valid but takes longer than expected.
+          <strong>Failed:</strong> the check times out, cannot connect, or
+          receives an unacceptable response. <strong>Out of date:</strong> no
+          recent check arrived within the expected interval plus a grace period.
+        </p>
+        <p>
+          The default incident policy opens after three consecutive failed
+          checks and resolves after two consecutive Working checks. Slow
+          responses do not resolve an incident.
+        </p>
+        <p>
+          Successful-check percentage includes valid slow responses. It
+          describes the recorded checks over 24 hours, rather than guaranteed
+          continuous uptime.
+        </p>
+      </section>
+      <section class="panel prose">
+        <h2>Scope & limitations</h2>
+        <p>
+          This is a portfolio project with controlled failure experiments. It is
+          not a commercial monitoring service and does not automatically repair
+          external providers or infer their internal root cause.
+        </p>
+        <p>
+          External notification delivery is at-least-once: a retry can repeat a
+          message if delivery succeeds immediately before a worker crashes.
+          Retention limits historical detail; the latest result is preserved.
+          Production deployment also needs appropriate HTTPS, secrets, egress
+          controls, and operational ownership.
+        </p>
+        <p>
+          Test results, experiment settings, and measured limitations are kept
+          in the repository so technical claims can be checked.
+        </p>
+        <div class="footer-links">
+          <a href="https://github.com/dpat0103/IntegrationOps"
+            >Source & documentation ↗</a
+          ><a href="/docs">Interactive API documentation</a>
+        </div>
+      </section>
+      <footer class="footer">
+        <span>IntegrationOps · Independent backend engineering project</span>
+        <div class="footer-links">
+          <a href="/">Monitoring</a><a href="/about">About this project</a
+          ><a href="https://github.com/dpat0103/IntegrationOps"
+            >Source & README ↗</a
+          >
+        </div>
+      </footer>
+    </main>
+  </body>
+</html>

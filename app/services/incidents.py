@@ -1,64 +1,51 @@
-from __future__ import annotations
-
 from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from app.core.models import HealthCheck, Incident, Integration, utcnow
-from app.services.metrics import ACTIVE_INCIDENTS
+from app.core.models import HealthCheck, Incident, utcnow
 
 
-def get_open_incident(session: Session, integration_id: int) -> Incident | None:
+def get_open_incident(session, integration_id):
     return session.scalar(
-        select(Incident)
-        .where(Incident.integration_id == integration_id, Incident.status == "OPEN")
-        .order_by(Incident.started_at.desc())
-    )
-
-
-def _recent_checks(session: Session, integration_id: int, limit: int) -> list[HealthCheck]:
-    return list(
-        session.scalars(
-            select(HealthCheck)
-            .where(HealthCheck.integration_id == integration_id)
-            .order_by(HealthCheck.checked_at.desc(), HealthCheck.id.desc())
-            .limit(limit)
+        select(Incident).where(
+            Incident.integration_id == integration_id, Incident.status == "OPEN"
         )
     )
 
 
 def apply_incident_policy(
-    session: Session,
-    integration: Integration,
-    *,
-    failure_threshold: int = 3,
-    recovery_threshold: int = 2,
-) -> tuple[Incident | None, str | None]:
-    open_incident = get_open_incident(session, integration.id)
-
-    failures = _recent_checks(session, integration.id, failure_threshold)
-    if len(failures) == failure_threshold and all(c.outcome == "FAILED" for c in failures):
-        if open_incident is None:
-            cause = failures[0].failure_type
-            incident = Incident(
+    session, integration, *, failure_threshold=3, recovery_threshold=2
+):
+    # The orchestrator locks the integration row; the partial unique index is a second invariant.
+    current = get_open_incident(session, integration.id)
+    checks = list(
+        session.scalars(
+            select(HealthCheck)
+            .where(HealthCheck.integration_id == integration.id)
+            .order_by(HealthCheck.checked_at.desc(), HealthCheck.id.desc())
+            .limit(max(failure_threshold, recovery_threshold))
+        )
+    )
+    if len(checks) >= failure_threshold and all(
+        check.outcome == "FAILED" for check in checks[:failure_threshold]
+    ):
+        if current is None:
+            current = Incident(
                 integration_id=integration.id,
                 status="OPEN",
                 severity="HIGH",
-                cause=cause,
+                cause=checks[0].failure_type,
                 failure_count=failure_threshold,
             )
-            session.add(incident)
+            session.add(current)
             session.flush()
-            ACTIVE_INCIDENTS.inc()
-            return incident, "OPENED"
-        open_incident.failure_count += 1
-        return open_incident, None
-
-    successes = _recent_checks(session, integration.id, recovery_threshold)
-    if open_incident and len(successes) == recovery_threshold and all(c.outcome in ("HEALTHY", "DEGRADED") for c in successes):
-        open_incident.status = "RESOLVED"
-        open_incident.resolved_at = utcnow()
-        ACTIVE_INCIDENTS.dec()
+            return current, "OPENED"
+        current.failure_count += 1
+    # Resolution requires normal performance, not merely an HTTP response.
+    if (
+        current
+        and len(checks) >= recovery_threshold
+        and all(check.outcome == "HEALTHY" for check in checks[:recovery_threshold])
+    ):
+        current.status = "RESOLVED"
+        current.resolved_at = utcnow()
         session.flush()
-        return open_incident, "RESOLVED"
-
-    return open_incident, None
+        return current, "RESOLVED"
+    return current, None

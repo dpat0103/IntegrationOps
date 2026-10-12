@@ -28,12 +28,20 @@ def make_integration(session, **kwargs):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status,expected",
-    [(401,"AUTHENTICATION_FAILURE"),(403,"AUTHENTICATION_FAILURE"),(429,"RATE_LIMITED"),(503,"UPSTREAM_FAILURE"),(404,"HTTP_ERROR")],
+    [
+        (401, "AUTHENTICATION_FAILURE"),
+        (403, "AUTHENTICATION_FAILURE"),
+        (429, "RATE_LIMITED"),
+        (503, "UPSTREAM_FAILURE"),
+        (404, "HTTP_ERROR"),
+    ],
 )
 async def test_http_failure_classification(tmp_path, status, expected):
-    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path/'db.sqlite'}")
+    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path / 'db.sqlite'}")
     init_db(engine)
-    transport = httpx.MockTransport(lambda request: httpx.Response(status, json={"error":"x"}))
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(status, json={"error": "x"})
+    )
     with Factory() as session:
         integration = make_integration(session)
         check = await execute_check(session, integration, transport=transport)
@@ -43,9 +51,11 @@ async def test_http_failure_classification(tmp_path, status, expected):
 
 @pytest.mark.asyncio
 async def test_response_validation_failure(tmp_path):
-    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path/'db.sqlite'}")
+    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path / 'db.sqlite'}")
     init_db(engine)
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"state":"healthy"}))
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"state": "healthy"})
+    )
     with Factory() as session:
         integration = make_integration(session)
         check = await execute_check(session, integration, transport=transport)
@@ -54,18 +64,38 @@ async def test_response_validation_failure(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_idempotent_execution_id(tmp_path):
-    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path/'db.sqlite'}")
+@pytest.mark.parametrize("body", ["null", "42", '["status"]', '"status"', "not json"])
+async def test_unexpected_json_shapes_are_recorded_as_failures(tmp_path, body):
+    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path / 'db.sqlite'}")
     init_db(engine)
-    calls = {"n":0}
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    with Factory() as session:
+        integration = make_integration(session)
+        check = await execute_check(session, integration, transport=transport)
+        assert check.outcome == "FAILED"
+        assert check.failure_type == "RESPONSE_VALIDATION_FAILURE"
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_idempotent_execution_id(tmp_path):
+    engine, Factory = build_engine_and_session(f"sqlite:///{tmp_path / 'db.sqlite'}")
+    init_db(engine)
+    calls = {"n": 0}
+
     def handler(request):
         calls["n"] += 1
-        return httpx.Response(200, json={"status":"healthy"})
+        return httpx.Response(200, json={"status": "healthy"})
+
     transport = httpx.MockTransport(handler)
     with Factory() as session:
         integration = make_integration(session)
-        first = await execute_check(session, integration, execution_id="same-id", transport=transport)
+        first = await execute_check(
+            session, integration, execution_id="same-id", transport=transport
+        )
         session.commit()
-        second = await execute_check(session, integration, execution_id="same-id", transport=transport)
+        second = await execute_check(
+            session, integration, execution_id="same-id", transport=transport
+        )
         assert first.id == second.id
         assert calls["n"] == 1

@@ -1,34 +1,56 @@
+name: integrationops
+x-common: &common
+  DATABASE_URL: postgresql+psycopg://integrationops:integrationops@postgres:5432/integrationops
+  REDIS_URL: redis://redis:6379/0
+  TASK_MODE: celery
+  SCHEDULER_ENABLED: "false"
+  DEMO_MODE: "true"
+  DEMO_SESSION_SECRET: ${DEMO_SESSION_SECRET:-local-compose-demo-session-secret-change-for-hosting}
+  OPERATOR_TOKEN: ${OPERATOR_TOKEN:-}
+  INTEGRATION_SECRET_KEY: ${INTEGRATION_SECRET_KEY:-}
+  SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+  AUTO_MIGRATE: "false"
 services:
+  migrate:
+    build: .
+    command: python -m app.migrate
+    environment: *common
+    depends_on:
+      postgres:
+        condition: service_healthy
   api:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    environment:
-      DATABASE_URL: postgresql+psycopg://integrationops:integrationops@postgres:5432/integrationops
-      TASK_MODE: celery
-      SCHEDULER_ENABLED: "false"
-      REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS: http://localhost:3000
-    ports: ["8000:8000"]
-    depends_on: [postgres, redis]
-
+    environment: *common
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/ready',timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
   worker:
     build: .
-    command: celery -A app.celery_app.celery_app worker --loglevel=INFO
-    environment:
-      DATABASE_URL: postgresql+psycopg://integrationops:integrationops@postgres:5432/integrationops
-      TASK_MODE: celery
-      REDIS_URL: redis://redis:6379/0
-    depends_on: [postgres, redis]
-
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+    environment: *common
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
   beat:
     build: .
     command: celery -A app.celery_app.celery_app beat --loglevel=INFO
-    environment:
-      DATABASE_URL: postgresql+psycopg://integrationops:integrationops@postgres:5432/integrationops
-      TASK_MODE: celery
-      REDIS_URL: redis://redis:6379/0
-    depends_on: [postgres, redis]
-
+    environment: *common
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
   postgres:
     image: postgres:16-alpine
     environment:
@@ -36,24 +58,34 @@ services:
       POSTGRES_USER: integrationops
       POSTGRES_PASSWORD: integrationops
     volumes: ["postgres_data:/var/lib/postgresql/data"]
-
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U integrationops -d integrationops"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
   redis:
     image: redis:7-alpine
-
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.5.0
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
-    volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    ports: ["9090:9090"]
-    depends_on: [api]
-
+    volumes: ["./observability/prometheus:/etc/prometheus:ro"]
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
+    depends_on:
+      api:
+        condition: service_healthy
   grafana:
-    image: grafana/grafana:latest
-    ports: ["3001:3000"]
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-local-demo-admin}
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3001}:3000"]
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on: [prometheus]
-
 volumes:
   postgres_data:

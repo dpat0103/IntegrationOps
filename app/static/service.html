@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Service health checks and the incident timeline in IntegrationOps."
+    />
+    <title>Service history · IntegrationOps</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="/assets/service.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/">IntegrationOps</a>
+        <div class="nav-links">
+          <a href="/">Monitoring</a><a href="/#case-study">Case study</a
+          ><a href="/about">About this project</a
+          ><a href="https://github.com/dpat0103/IntegrationOps">GitHub ↗</a>
+        </div>
+      </nav>
+    </header>
+    <main class="shell" id="main">
+      <a class="back" href="/">← Back to monitoring</a>
+      <div id="error" class="notice error" role="alert" hidden></div>
+      <section class="intro">
+        <p class="eyebrow">Service detail</p>
+        <h1 id="service-name">Loading service…</h1>
+        <p class="lead">
+          The latest check result, recent observations, and the history of
+          persistent failures.
+        </p>
+      </section>
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Current state</h2>
+            <div id="current" class="loading">Loading…</div>
+          </div>
+          <button id="check-now">Check now</button>
+        </div>
+        <p id="feedback" class="feedback" role="status" aria-live="polite">
+          Results refresh every five seconds.
+        </p>
+      </section>
+      <section class="panel">
+        <h2>Check history</h2>
+        <p class="muted">
+          Most recent first. Each row is one recorded observation.
+        </p>
+        <p class="small">
+          On a small screen, scroll the table horizontally to see all response
+          details.
+        </p>
+        <div
+          class="table-wrap"
+          id="checks"
+          tabindex="0"
+          role="region"
+          aria-label="Check history table"
+        ></div>
+      </section>
+      <section class="panel">
+        <h2>Incident timeline</h2>
+        <p class="muted">
+          An incident opens after repeated failures and resolves after normal
+          responses return.
+        </p>
+        <div id="incidents"></div>
+      </section>
+      <footer class="footer">
+        <span>IntegrationOps · Independent backend engineering project</span>
+        <div class="footer-links">
+          <a href="/">Monitoring</a><a href="/about">About this project</a
+          ><a href="https://github.com/dpat0103/IntegrationOps"
+            >Source & README ↗</a
+          >
+        </div>
+      </footer>
+    </main>
+  </body>
+</html>

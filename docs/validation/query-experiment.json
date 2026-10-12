@@ -1,0 +1,14 @@
+{
+  "previous_per_service_lookup": {
+    "sql_statements_per_lookup": 100,
+    "latency_ms_median": 36.278,
+    "iterations": 20
+  },
+  "batched_lookup": {
+    "sql_statements_per_lookup": 1,
+    "latency_ms_median": 2.301,
+    "iterations": 20
+  },
+  "scope": "Latest-check lookup only, 100 services and stored synthetic results, PostgreSQL on one machine",
+  "measured_at": "2026-10-12T02:38:40.824535+00:00"
+}

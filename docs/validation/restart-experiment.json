@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "worker_interruption": "SIGKILL",
+  "reused_run_id": true,
+  "persisted_outcomes_for_interrupted_run": 1,
+  "run_attempts": 2,
+  "recovery_elapsed_seconds": 66.25,
+  "persisted_incidents_survive_api_restart": true,
+  "metrics_survive_api_restart": true
+}

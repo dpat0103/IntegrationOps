@@ -1,0 +1,10 @@
+.git
+.venv
+frontend
+__pycache__
+.pytest_cache
+*.db
+*.db-wal
+*.db-shm
+.env
+docs/validation

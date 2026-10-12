@@ -1,0 +1,148 @@
+:root {
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  color: #172b43;
+  background: #f3f6fa;
+  font-size: 16px;
+  line-height: 1.6;
+  color-scheme: light;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+a {
+  color: #1558b0;
+  text-underline-offset: 4px;
+}
+header {
+  background: #142c46;
+  color: white;
+}
+nav {
+  max-width: 1180px;
+  margin: auto;
+  padding: 20px 24px;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+nav a {
+  color: #e0ecff;
+}
+main {
+  max-width: 1180px;
+  margin: auto;
+  padding: 36px 24px 64px;
+}
+h1 {
+  font-size: clamp(30px, 4vw, 44px);
+  line-height: 1.2;
+  letter-spacing: -1px;
+  max-width: 750px;
+  margin: 0 0 18px;
+}
+h2 {
+  font-size: 21px;
+  margin: 0 0 8px;
+}
+.intro {
+  font-size: 18px;
+  max-width: 720px;
+  color: #445c73;
+}
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 12px;
+  font-weight: 750;
+  color: #52677d;
+}
+.muted {
+  color: #52677d;
+  font-size: 14px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 28px 0;
+}
+.card,
+.panel {
+  background: white;
+  border: 1px solid #dce4ed;
+  border-radius: 14px;
+  padding: 24px;
+}
+.panel {
+  margin-bottom: 22px;
+}
+.value {
+  display: block;
+  font-size: 32px;
+  margin-top: 8px;
+}
+.row {
+  padding: 18px 0;
+  border-top: 1px solid #e4eaf1;
+}
+.endpoint {
+  overflow-wrap: anywhere;
+}
+.status {
+  font-size: 12px;
+  border-radius: 20px;
+  padding: 4px 9px;
+  font-weight: 700;
+}
+.HEALTHY {
+  background: #e3f3ea;
+  color: #226045;
+}
+.DEGRADED {
+  background: #fff2d4;
+  color: #805200;
+}
+.FAILED {
+  background: #fce8e7;
+  color: #9c3533;
+}
+.UNKNOWN {
+  background: #edf1f6;
+  color: #52677d;
+}
+.notice {
+  padding: 20px;
+  background: #edf1f6;
+  border-radius: 10px;
+  margin: 20px 0;
+}
+:focus-visible {
+  outline: 3px solid #3178d6;
+  outline-offset: 4px;
+}
+@media (max-width: 700px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  main {
+    padding: 26px 16px;
+  }
+  nav {
+    flex-direction: column;
+    padding: 16px;
+  }
+  .card {
+    padding: 16px;
+  }
+  .value {
+    font-size: 28px;
+  }
+}

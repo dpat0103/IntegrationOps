@@ -15,7 +15,9 @@ def client(tmp_path: Path):
         task_mode="local",
         failure_threshold=3,
         recovery_threshold=2,
+        operator_token="test-operator-token",
+        demo_session_secret="test-stable-session-secret-for-tests",
     )
     app = create_app(settings)
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": "Bearer test-operator-token"}) as c:
         yield c

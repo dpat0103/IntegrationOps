@@ -1,202 +1,426 @@
-from __future__ import annotations
-
-import asyncio
-import json
 import math
-from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
-
-from app.api.deps import get_db
-from app.core.models import HealthCheck, Incident, Integration
+import asyncio
+from datetime import timedelta
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from app.api.deps import demo_owner, get_db, same_origin, service_for_request
+from app.core.db import lock_writes
+from app.core.models import (
+    CheckRun,
+    DemoState,
+    HealthCheck,
+    Incident,
+    Integration,
+    utcnow,
+)
 from app.core.schemas import (
     CheckRead,
+    DemoScenario,
     IncidentRead,
     IntegrationCreate,
     IntegrationRead,
     IntegrationUpdate,
     Overview,
+    RunRead,
     SimulatorState,
 )
+from app.core.security import (
+    UnsafeTarget,
+    encrypted_headers,
+    require_operator,
+    validate_url,
+)
+from app.services.demo import setup_demo
+from app.services.jobs import RunBusy, RunExhausted, reserve_run
 from app.services.orchestrator import run_integration_check
+from app.services.status import (
+    latest_checks,
+    process_health,
+    scope_query,
+    service_status,
+)
 
 router = APIRouter(prefix="/api")
 
 
-def _pct(values: list[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    values = sorted(values)
-    idx = max(0, min(len(values) - 1, math.ceil(percentile * len(values)) - 1))
-    return round(values[idx], 2)
+def integration_read(integration):
+    result = IntegrationRead.model_validate(integration).model_dump()
+    result["name"] = integration.display_name
+    return result
 
 
+def checked_url(endpoint):
+    try:
+        validate_url(endpoint)
+    except UnsafeTarget as exc:
+        raise HTTPException(422, str(exc))
+    return str(endpoint)
+
+
+@router.get("/health/live")
+def liveness():
+    return {"status": "alive", "service": "IntegrationOps"}
+
+
+@router.get("/health/ready")
 @router.get("/health")
-def api_health():
-    return {"status": "ok", "service": "IntegrationOps"}
+def readiness(request: Request, session=Depends(get_db)):
+    try:
+        session.execute(select(1))
+        result = process_health(session, request.app.state.settings)
+        return JSONResponse(
+            result, status_code=200 if result["status"] == "ready" else 503
+        )
+    except SQLAlchemyError:
+        return JSONResponse(
+            {"status": "not_ready", "database": "unavailable"}, status_code=503
+        )
 
 
-@router.post("/integrations", response_model=IntegrationRead, status_code=201)
-def create_integration(payload: IntegrationCreate, session: Session = Depends(get_db)):
-    if session.scalar(select(Integration).where(Integration.name == payload.name)):
-        raise HTTPException(status_code=409, detail="Integration name already exists")
-    integration = Integration(
-        name=payload.name,
-        endpoint=str(payload.endpoint),
-        method=payload.method,
-        expected_status=payload.expected_status,
-        timeout_ms=payload.timeout_ms,
-        latency_threshold_ms=payload.latency_threshold_ms,
-        check_interval_seconds=payload.check_interval_seconds,
-        expected_json_key=payload.expected_json_key,
-        expected_json_value=payload.expected_json_value,
-        headers_json=json.dumps(payload.headers) if payload.headers else None,
-        active=payload.active,
+@router.get("/config")
+def configuration(request: Request):
+    settings = request.app.state.settings
+    return {
+        "demo_mode": settings.demo_mode,
+        "automatic_checks": settings.scheduler_enabled
+        or settings.task_mode == "celery",
+        "task_mode": settings.task_mode,
+        "failure_threshold": settings.failure_threshold,
+        "recovery_threshold": settings.recovery_threshold,
+        "stale_grace_seconds": settings.stale_grace_seconds,
+        "recovery_requires": "HEALTHY",
+        "retention_days": settings.retention_days,
+    }
+
+
+@router.post(
+    "/integrations",
+    response_model=IntegrationRead,
+    status_code=201,
+    dependencies=[Depends(require_operator)],
+)
+def create_integration(
+    payload: IntegrationCreate, request: Request, session=Depends(get_db)
+):
+    values = payload.model_dump(exclude={"headers"})
+    values["endpoint"] = checked_url(payload.endpoint)
+    values["headers_json"] = encrypted_headers(
+        payload.headers, request.app.state.settings
     )
+    integration = Integration(**values)
     session.add(integration)
-    session.commit()
-    session.refresh(integration)
-    return integration
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(409, "Integration name already exists")
+    return integration_read(integration)
 
 
 @router.get("/integrations", response_model=list[IntegrationRead])
-def list_integrations(session: Session = Depends(get_db)):
-    return list(session.scalars(select(Integration).order_by(Integration.id)))
+def integrations(request: Request, session=Depends(get_db)):
+    return [
+        integration_read(item)
+        for item in session.scalars(scope_query(request).order_by(Integration.id))
+    ]
 
 
 @router.get("/integrations/{integration_id}", response_model=IntegrationRead)
-def get_integration(integration_id: int, session: Session = Depends(get_db)):
-    integration = session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
-    return integration
+def get_integration(integration_id: int, request: Request, session=Depends(get_db)):
+    return integration_read(service_for_request(session, integration_id, request))
 
 
-@router.patch("/integrations/{integration_id}", response_model=IntegrationRead)
-def update_integration(integration_id: int, payload: IntegrationUpdate, session: Session = Depends(get_db)):
-    integration = session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
+@router.patch(
+    "/integrations/{integration_id}",
+    response_model=IntegrationRead,
+    dependencies=[Depends(require_operator)],
+)
+def update_integration(
+    integration_id: int,
+    payload: IntegrationUpdate,
+    request: Request,
+    session=Depends(get_db),
+):
+    integration = service_for_request(session, integration_id, request)
+    if integration.demo_owner:
+        raise HTTPException(
+            403, "Use the constrained demo controls for simulated services"
+        )
     for key, value in payload.model_dump(exclude_unset=True).items():
-        if key == "endpoint" and value is not None:
-            value = str(value)
-        setattr(integration, key, value)
-    session.commit()
-    session.refresh(integration)
-    return integration
+        if key == "headers":
+            integration.headers_json = encrypted_headers(
+                value, request.app.state.settings
+            )
+        else:
+            setattr(
+                integration, key, checked_url(value) if key == "endpoint" else value
+            )
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(409, "Integration name already exists")
+    return integration_read(integration)
 
 
-@router.delete("/integrations/{integration_id}", status_code=204)
-def delete_integration(integration_id: int, session: Session = Depends(get_db)):
-    integration = session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
+@router.delete(
+    "/integrations/{integration_id}",
+    status_code=204,
+    dependencies=[Depends(require_operator)],
+)
+def delete_integration(integration_id: int, request: Request, session=Depends(get_db)):
+    integration = service_for_request(session, integration_id, request)
     session.delete(integration)
     session.commit()
 
 
-@router.post("/integrations/{integration_id}/check", response_model=CheckRead)
-async def manual_check(integration_id: int, request: Request, session: Session = Depends(get_db)):
-    integration = session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
-    return await run_integration_check(
-        session,
-        integration,
-        failure_threshold=request.app.state.settings.failure_threshold,
-        recovery_threshold=request.app.state.settings.recovery_threshold,
-        slack_webhook_url=request.app.state.settings.slack_webhook_url,
+@router.post("/integrations/{integration_id}/check")
+async def check(integration_id: int, request: Request, session=Depends(get_db)):
+    same_origin(request)
+    integration = service_for_request(session, integration_id, request)
+    if not integration.active:
+        raise HTTPException(409, "Service monitoring is paused")
+    settings = request.app.state.settings
+    if integration.demo_owner:
+        from app.services.limits import demo_budget
+
+        demo_budget(session, integration.demo_owner)
+    try:
+        if settings.task_mode == "celery":
+            run, publish = reserve_run(session, integration_id, settings)
+            if not run:
+                raise HTTPException(409, "Service monitoring is paused")
+            if publish:
+                from app.tasks import check_integration
+
+                try:
+                    await asyncio.to_thread(
+                        check_integration.apply_async,
+                        args=[run.execution_id],
+                        task_id=run.execution_id,
+                    )
+                except Exception:
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "Check run %s remains queued after publication failure",
+                        run.execution_id,
+                    )
+            return JSONResponse(
+                RunRead.model_validate(run).model_dump(mode="json"), status_code=202
+            )
+        result = await run_integration_check(session, integration, settings=settings)
+        return CheckRead.model_validate(result)
+    except (RunBusy, RunExhausted):
+        raise HTTPException(409, "A check is already running; wait for it to finish")
+
+
+@router.get("/runs/{execution_id}")
+def run_state(execution_id: str, request: Request, session=Depends(get_db)):
+    run = session.get(CheckRun, execution_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    service_for_request(session, run.integration_id, request)
+    result = RunRead.model_validate(run).model_dump()
+    check = session.scalar(
+        select(HealthCheck).where(HealthCheck.execution_id == execution_id)
     )
+    result["check"] = CheckRead.model_validate(check).model_dump() if check else None
+    return result
 
 
 @router.get("/integrations/{integration_id}/checks", response_model=list[CheckRead])
-def integration_checks(integration_id: int, limit: int = 100, session: Session = Depends(get_db)):
-    if not session.get(Integration, integration_id):
-        raise HTTPException(status_code=404, detail="Integration not found")
+def check_history(
+    integration_id: int,
+    request: Request,
+    limit: int = Query(100, ge=1, le=500),
+    session=Depends(get_db),
+):
+    service_for_request(session, integration_id, request)
     return list(
         session.scalars(
             select(HealthCheck)
             .where(HealthCheck.integration_id == integration_id)
             .order_by(HealthCheck.checked_at.desc(), HealthCheck.id.desc())
-            .limit(min(max(limit, 1), 500))
+            .limit(limit)
         )
     )
 
 
 @router.get("/incidents", response_model=list[IncidentRead])
-def list_incidents(status: str | None = None, session: Session = Depends(get_db)):
-    stmt = select(Incident).order_by(Incident.started_at.desc())
-    if status:
-        stmt = stmt.where(Incident.status == status.upper())
-    return list(session.scalars(stmt.limit(200)))
-
-
-@router.get("/overview", response_model=Overview)
-def overview(session: Session = Depends(get_db)):
-    integrations = list(session.scalars(select(Integration).where(Integration.active.is_(True))))
-    statuses = {"HEALTHY": 0, "DEGRADED": 0, "FAILED": 0}
-    for integration in integrations:
-        latest = session.scalar(
-            select(HealthCheck)
-            .where(HealthCheck.integration_id == integration.id)
-            .order_by(HealthCheck.checked_at.desc(), HealthCheck.id.desc())
-            .limit(1)
-        )
-        if latest:
-            statuses[latest.outcome] = statuses.get(latest.outcome, 0) + 1
-
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
-    recent = list(session.scalars(select(HealthCheck).where(HealthCheck.checked_at >= since)))
-    available = [c for c in recent if c.outcome in ("HEALTHY", "DEGRADED")]
-    latencies = [c.latency_ms for c in recent if c.latency_ms is not None]
-    availability = round(len(available) / len(recent) * 100, 2) if recent else None
-    avg_latency = round(sum(latencies) / len(latencies), 2) if latencies else None
-    active_incidents = session.scalar(select(func.count()).select_from(Incident).where(Incident.status == "OPEN")) or 0
-
-    return Overview(
-        total_integrations=len(integrations),
-        healthy=statuses.get("HEALTHY", 0),
-        degraded=statuses.get("DEGRADED", 0),
-        down=statuses.get("FAILED", 0),
-        active_incidents=active_incidents,
-        checks_24h=len(recent),
-        availability_24h=availability,
-        avg_latency_ms_24h=avg_latency,
-        p95_latency_ms_24h=_pct(latencies, 0.95),
+def incidents(
+    request: Request,
+    status: str | None = None,
+    integration_id: int | None = None,
+    session=Depends(get_db),
+):
+    ids = scope_query(request).with_only_columns(Integration.id)
+    statement = (
+        select(Incident)
+        .where(Incident.integration_id.in_(ids))
+        .order_by(Incident.started_at.desc(), Incident.id.desc())
     )
+    if status:
+        if status.upper() not in ("OPEN", "RESOLVED"):
+            raise HTTPException(422, "Status must be OPEN or RESOLVED")
+        statement = statement.where(Incident.status == status.upper())
+    if integration_id:
+        service_for_request(session, integration_id, request)
+        statement = statement.where(Incident.integration_id == integration_id)
+    return list(session.scalars(statement.limit(200)))
 
 
 @router.get("/status")
-def current_status(session: Session = Depends(get_db)):
-    rows = []
-    integrations = list(session.scalars(select(Integration).where(Integration.active.is_(True)).order_by(Integration.name)))
-    for integration in integrations:
-        latest = session.scalar(
-            select(HealthCheck)
-            .where(HealthCheck.integration_id == integration.id)
-            .order_by(HealthCheck.checked_at.desc(), HealthCheck.id.desc())
+def statuses(request: Request, session=Depends(get_db)):
+    settings = request.app.state.settings
+    services = list(
+        session.scalars(
+            scope_query(request)
+            .where(Integration.active.is_(True))
+            .order_by(Integration.name)
+        )
+    )
+    latest = latest_checks(session, [item.id for item in services])
+    return [service_status(item, latest.get(item.id), settings) for item in services]
+
+
+@router.get("/overview", response_model=Overview)
+def overview(request: Request, session=Depends(get_db)):
+    services = list(
+        session.scalars(scope_query(request).where(Integration.active.is_(True)))
+    )
+    ids = [item.id for item in services]
+    latest = latest_checks(session, ids)
+    states = [
+        service_status(item, latest.get(item.id), request.app.state.settings)["status"]
+        for item in services
+    ]
+    window = utcnow() - timedelta(hours=24)
+    predicate = (HealthCheck.integration_id.in_(ids), HealthCheck.checked_at >= window)
+    total, available, average = session.execute(
+        select(
+            func.count(HealthCheck.id),
+            func.sum(
+                case((HealthCheck.outcome.in_(["HEALTHY", "DEGRADED"]), 1), else_=0)
+            ),
+            func.avg(HealthCheck.latency_ms),
+        ).where(*predicate)
+    ).one()
+    count = (
+        session.scalar(
+            select(func.count(HealthCheck.id)).where(
+                *predicate, HealthCheck.latency_ms.is_not(None)
+            )
+        )
+        or 0
+    )
+    p95 = (
+        session.scalar(
+            select(HealthCheck.latency_ms)
+            .where(*predicate, HealthCheck.latency_ms.is_not(None))
+            .order_by(HealthCheck.latency_ms)
+            .offset(max(0, math.ceil(count * 0.95) - 1))
             .limit(1)
         )
-        rows.append({
-            "id": integration.id,
-            "name": integration.name,
-            "endpoint": integration.endpoint,
-            "status": latest.outcome if latest else "UNKNOWN",
-            "latency_ms": round(latest.latency_ms, 2) if latest and latest.latency_ms is not None else None,
-            "failure_type": latest.failure_type if latest else None,
-            "last_checked_at": latest.checked_at.isoformat() if latest else None,
-        })
-    return rows
+        if count
+        else None
+    )
+    return Overview(
+        total_integrations=len(services),
+        healthy=states.count("HEALTHY"),
+        degraded=states.count("DEGRADED"),
+        down=states.count("FAILED"),
+        stale=states.count("STALE"),
+        unknown=states.count("UNKNOWN"),
+        active_incidents=session.scalar(
+            select(func.count())
+            .select_from(Incident)
+            .where(Incident.integration_id.in_(ids), Incident.status == "OPEN")
+        )
+        or 0,
+        checks_24h=total,
+        availability_24h=round((available or 0) / total * 100, 2) if total else None,
+        avg_latency_ms_24h=round(average, 2) if average is not None else None,
+        p95_latency_ms_24h=round(p95, 2) if p95 is not None else None,
+    )
 
 
-@router.post("/simulator/state")
-def set_simulator_state(payload: SimulatorState, request: Request):
+@router.post("/demo", dependencies=[Depends(same_origin)])
+def create_demo(request: Request, session=Depends(get_db)):
+    if not request.app.state.settings.demo_mode:
+        raise HTTPException(404, "Demo is disabled")
+    owner = demo_owner(request)
+    from app.services.limits import demo_budget
+
+    demo_budget(session, owner)
+    return [
+        integration_read(item)
+        for item in setup_demo(
+            session, owner, request.app.state.settings.demo_ttl_hours
+        )
+    ]
+
+
+@router.get("/demo")
+def demo(request: Request, session=Depends(get_db)):
+    owner = demo_owner(request)
+    return [
+        {"service": state.service, "mode": state.mode}
+        for state in session.scalars(select(DemoState).where(DemoState.owner == owner))
+    ]
+
+
+@router.post("/demo/scenario", dependencies=[Depends(same_origin)])
+def demo_scenario(payload: DemoScenario, request: Request, session=Depends(get_db)):
+    if not request.app.state.settings.demo_mode:
+        raise HTTPException(404, "Demo is disabled")
+    owner = demo_owner(request)
+    from app.services.limits import demo_budget
+
+    demo_budget(session, owner)
+    lock_writes(session)
+    integration = session.scalar(
+        select(Integration)
+        .where(Integration.demo_owner == owner, Integration.demo_key == payload.service)
+        .with_for_update()
+    )
+    if integration is None:
+        raise HTTPException(409, "Create the example services first")
+    pending = session.scalar(
+        select(CheckRun.execution_id).where(
+            CheckRun.integration_id == integration.id,
+            CheckRun.status.in_(["QUEUED", "RUNNING"]),
+        )
+    )
+    if pending:
+        session.rollback()
+        raise HTTPException(
+            409, "Wait for the current check before changing the scenario"
+        )
+    state = session.get(DemoState, (owner, payload.service))
+    if not state:
+        raise HTTPException(409, "Create the example services first")
+    state.mode = payload.mode
+    state.expires_at = utcnow() + timedelta(
+        hours=request.app.state.settings.demo_ttl_hours
+    )
+    session.commit()
+    return {"service": payload.service, "mode": payload.mode}
+
+
+# Legacy operator-only simulator for API compatibility; public demos use isolated DB state.
+@router.post("/simulator/state", dependencies=[Depends(require_operator)])
+def legacy_simulator(payload: SimulatorState, request: Request):
     request.app.state.simulator_mode = payload.mode
     request.app.state.simulator_delay_seconds = payload.delay_seconds
-    return {"mode": payload.mode, "delay_seconds": payload.delay_seconds}
+    return payload.model_dump()
 
 
-@router.get("/simulator/state")
-def get_simulator_state(request: Request):
-    return {"mode": request.app.state.simulator_mode, "delay_seconds": request.app.state.simulator_delay_seconds}
+@router.get("/simulator/state", dependencies=[Depends(require_operator)])
+def legacy_simulator_state(request: Request):
+    return {
+        "mode": request.app.state.simulator_mode,
+        "delay_seconds": request.app.state.simulator_delay_seconds,
+    }

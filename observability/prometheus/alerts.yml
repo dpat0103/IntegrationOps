@@ -1,0 +1,38 @@
+groups:
+  - name: integrationops
+    rules:
+      - alert: MonitorUnavailable
+        expr: up{job="integrationops"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: IntegrationOps metrics endpoint is unavailable
+      - alert: SchedulerHeartbeatStale
+        expr: integrationops_heartbeat_age_seconds{role="scheduler"} > 60 or integrationops_heartbeat_age_seconds{role="scheduler"} < 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Scheduled checks are not being dispatched
+      - alert: WorkerHeartbeatStale
+        expr: integrationops_heartbeat_age_seconds{role="worker"} > 60 or integrationops_heartbeat_age_seconds{role="worker"} < 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Workers are not reporting recent activity
+      - alert: NotificationRetriesExhausted
+        expr: integrationops_dead_alerts > 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: At least one incident notification needs operator attention
+      - alert: CheckQueueDelayed
+        expr: integrationops_queue_oldest_age_seconds > 60
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: Queued checks are waiting longer than the expected run lease

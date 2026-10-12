@@ -60,7 +60,7 @@ This comparison covers the latest-result lookup only, not the entire API or a pr
 
 Manual browser verification covered the three-service setup, outage/recovery, the complete 11-step case study, About navigation, direct GitHub links, and service history. Responsive inspection covers desktop and narrow mobile layouts.
 
-The repository also contains automated Playwright desktop/mobile workflows. The published CI result is the authoritative record for those runs; authoring/type-checking them is not counted as a completed browser execution.
+The hosted Playwright job passed all 8 desktop/mobile tests: failure classification and recovery, service history, About/source links, narrow layouts, the complete case study, and visible connection/invalid-service errors. The backend and frontend jobs also passed. [Hosted validation run](https://github.com/dpat0103/IntegrationOps/actions/runs/38199536192). The distributed recovery job is reported separately by that workflow.
 
 Saved previews are in `docs/validation/`. They show simulated data.
 
